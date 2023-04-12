@@ -60,18 +60,6 @@ class State {
     }
 }
 
-class Simbolo {
-    symbol: String
-
-    constructor(simbolo: String) {
-        this.symbol = simbolo
-    }
-
-    toString(): String {
-        return this.symbol
-    }
-}
-
 class Circle {
     private x: number = 0
     private y: number = 0
@@ -183,6 +171,10 @@ class Circle {
     public setHideLabel(b: boolean): void {
         this.isLabelHidden = b
     }
+
+    public dwarf(): void {
+        this.radius = this.radius * 0.1
+    }
 }
 
 class ArrowFactory {
@@ -224,20 +216,25 @@ abstract class Arrow {
     protected isHighlighted: boolean = false
     protected label: string = '0'
     protected labelFont: string = "20px Times New Roman"
-    protected isLabelHidden: boolean = false
+    protected isLabelVisible: boolean = true
 
     constructor(ctx: CanvasRenderingContext2D) {
         this.ctx = ctx
     }
     
     protected abstract drawCurve(): void
-    protected abstract drawLabel(): void
     protected abstract drawArrowHead(): void
     protected abstract updateControlPoint(): void
-    public abstract isPointInsideLabel(x: number, y: number): boolean
+    public abstract isLabelClickedAt(x: number, y: number): boolean
     public abstract getLabelPosition(): {x: number, y: number}
-    public abstract isCurveClicked(x: number, y: number): boolean
+    public abstract isCurveClickedAt(x: number, y: number): boolean
     public abstract recalculateCurveViaDraggingPointAt(x: number, y: number): void
+
+    protected drawLabel(): void {
+        this.ctx.font = this.labelFont
+        this.ctx.fillStyle = this.defaultColor
+        this.ctx.fillText(this.label, this.getLabelPosition().x, this.getLabelPosition().y)
+    }
     
     public setLabel(label: string): void {
         this.label = label
@@ -263,7 +260,7 @@ abstract class Arrow {
     public draw(): void {
         this.updateControlPoint()
         this.drawCurve()
-        if (!this.isLabelHidden) this.drawLabel()
+        if (this.isLabelVisible) this.drawLabel()
     }
     
     public setHighlight(b: boolean): void {
@@ -286,27 +283,29 @@ abstract class Arrow {
         return angle
     }
 
-    public setHideLabel(b: boolean): void {
-        this.isLabelHidden = b
+    public setLabelVisibility(b: boolean): void {
+        this.isLabelVisible = b
+    }
+
+    public getLabelVisibility(): boolean {
+        return this.isLabelVisible
     }
 }
 
 class BezierArrow extends Arrow {
+    private t0: number = 0
+    private t1: number = 1
+
     constructor(ctx: CanvasRenderingContext2D) {
         super(ctx)
     }
 
-    public isPointInsideLabel(x: number, y: number): boolean {
-        const limit = 15
-        // Checks if the clicked position is within the boundaries of the circle
+    public isLabelClickedAt(x: number, y: number): boolean {
+        const radius = 15
+        // Check if the clicked position is within a circular boundary 
+        // encircling the label and the threshold of the Bezier segment
         const distance = Math.sqrt((x - this.getLabelPosition().x) ** 2 + (y - this.getLabelPosition().y) ** 2)
-        return distance <= limit
-    }
-
-    protected drawLabel(): void {
-        this.ctx.font = this.labelFont
-        this.ctx.fillStyle = this.defaultColor
-        this.ctx.fillText(this.label, this.getLabelPosition().x, this.getLabelPosition().y)
+        return distance <= radius || this.isBezierSegmentTappedAt(x, y) >= 0
     }
 
     protected drawArrowHead(): void {
@@ -356,8 +355,8 @@ class BezierArrow extends Arrow {
         return controlPoint
     }
 
-    public isCurveClicked(x: number, y: number): boolean {
-        return this.isBezierCurveTappedAt(x, y) >= 0
+    public isCurveClickedAt(x: number, y: number): boolean {
+        return this.isLabelClickedAt(x, y)
     }
 
     public recalculateCurveViaDraggingPointAt(x: number, y: number): void {
@@ -376,7 +375,7 @@ class BezierArrow extends Arrow {
 
     public getCircleBezierIntersection(circle: Circle): {x: number, y: number} | undefined {
         for (let point of circle.generateCirclePoints(150)) {
-            if (this.isBezierCurveTappedAt(point.x, point.y, 1) >= 0) {
+            if (this.isBezierCurveTappedAt(point.x, point.y, 0, 1, 1) >= 0) {
                 return point
             }
         }
@@ -385,16 +384,22 @@ class BezierArrow extends Arrow {
 
     public getCircleBezierIntersectionTValue(circle: Circle): number {
         for (let point of circle.generateCirclePoints(200)) {
-            let t = this.isBezierCurveTappedAt(point.x, point.y, 1)
+            let t = this.isBezierCurveTappedAt(point.x, point.y, 0, 1, 1)
             if (t >= 0) {
                 return t
             }
         }
         return -1
     }
+
+    private isBezierSegmentTappedAt(posX: number, posY: number): number {
+        this.calculateFreeVariableInterval()
+        return this.isBezierCurveTappedAt(posX, posY , this.t0, this.t1)
+    }
     
-    private isBezierCurveTappedAt(posX: number, posY: number, threshold = 8, samples = 1000): number {
-        for (let t = 0; t <= 1; t += 1 / samples) {
+    // The Bezier curve by default compasses the free variable t in the closed interval [0, 1]
+    private isBezierCurveTappedAt(posX: number, posY: number, t0: number = 0, t1: number = 1, threshold = 12, samples = 1000): number {
+        for (let t = t0; t <= t1; t += 1 / samples) {
             const x = Math.pow(1 - t, 2) * this.startX + 2 * (1 - t) * t * this.controlPointX + Math.pow(t, 2) * this.endX
             const y = Math.pow(1 - t, 2) * this.startY + 2 * (1 - t) * t * this.controlPointY + Math.pow(t, 2) * this.endY
 
@@ -409,12 +414,16 @@ class BezierArrow extends Arrow {
     private lerp(a: number, b: number, t: number): number {
         return a + (b - a) * t;
     }
+
+    private calculateFreeVariableInterval(): void {
+        this.t0 = this.getCircleBezierIntersectionTValue(this.circleFrom)
+        this.t1 = this.getCircleBezierIntersectionTValue(this.circleTo)
+    }
     
     protected drawCurve(segments = 50): void {
-        let t0 = this.getCircleBezierIntersectionTValue(this.circleFrom)
-        let t1 = this.getCircleBezierIntersectionTValue(this.circleTo)
+        this.calculateFreeVariableInterval()
 
-        if (t0 == -1 || t1 == -1) {
+        if (this.t0 == -1 || this.t1 == -1) {
             console.log("Can't draw curve!")
             return
         }
@@ -422,7 +431,7 @@ class BezierArrow extends Arrow {
         this.ctx.beginPath()
     
         for (let i = 0; i <= segments; i++) {
-            const t = this.lerp(t0, t1, i / segments)
+            const t = this.lerp(this.t0, this.t1, i / segments)
             const u = 1 - t
     
             const x = u * u * this.startX + 2 * u * t * this.controlPointX + t * t * this.endX
@@ -472,6 +481,7 @@ class BezierArrow extends Arrow {
 
         let x = controlPoint.x + 20 * Math.sin(angle)
         let y = controlPoint.y + 20 * Math.cos(angle)
+
         return {x, y}
     }
 }
@@ -485,7 +495,7 @@ class LoopingArrow extends Arrow {
         super(ctx)
     }
 
-    public isPointInsideLabel(x: number, y: number): boolean {
+    public isLabelClickedAt(x: number, y: number): boolean {
         const limit = 15
         // Checks if the clicked position is within the boundaries of the circle
         const distance = Math.sqrt((x - this.getLabelPosition().x) ** 2 + (y - this.getLabelPosition().y) ** 2)
@@ -508,13 +518,6 @@ class LoopingArrow extends Arrow {
         this.drawArrowHead()
     }
 
-    protected drawLabel(): void {
-        let position = this.getLabelPosition()
-        this.ctx.font = this.labelFont
-        this.ctx.fillStyle = this.defaultColor
-        this.ctx.fillText(this.label, position.x, position.y)
-    }
-    
     protected drawArrowHead(): void {
         const endPoint = {
             x: this.controlPointX + this.arrowRadius * Math.cos(this.endAngle),
@@ -539,10 +542,10 @@ class LoopingArrow extends Arrow {
         this.endAngle = - (2 * Math.PI)/3 + this.controlPointParameter
     }
 
-    public isCurveClicked(x: number, y: number): boolean {
+    public isCurveClickedAt(x: number, y: number): boolean {
         const dx = this.controlPointX - x
         const dy = this.controlPointY - y
-        return dx * dx + dy * dy <= this.arrowRadius ** 2
+        return dx * dx + dy * dy <= this.arrowRadius ** 2 || this.isLabelClickedAt(x, y)
     }
 
     public recalculateCurveViaDraggingPointAt(x: number, y: number): void {
@@ -556,6 +559,7 @@ class InitialArrow extends Arrow {
     constructor(ctx: CanvasRenderingContext2D) {
         super(ctx)
         this.controlPointParameter = 0
+        this.isLabelVisible = false
     }
 
     protected drawCurve(): void {
@@ -585,6 +589,7 @@ class InitialArrow extends Arrow {
         this.ctx.lineTo(headPoint1X, headPoint1Y)
         this.ctx.lineTo(headPoint2X, headPoint2Y)
         this.ctx.closePath()
+        this.ctx.fillStyle = this.defaultColor
         this.ctx.fill()
     }
 
@@ -596,7 +601,7 @@ class InitialArrow extends Arrow {
                     this.circleTo.getRadius() * Math.sin(this.controlPointParameter)
     }
 
-    public isCurveClicked(x: number, y: number): boolean {
+    public isCurveClickedAt(x: number, y: number): boolean {
         const distance = Math.sqrt(Math.pow(x - this.endX, 2) + Math.pow(y - this.endY, 2));
         return distance <= this.length
     }
@@ -610,12 +615,16 @@ class InitialArrow extends Arrow {
         return
     }
 
-    public isPointInsideLabel(x: number, y: number): boolean {
+    public isLabelClickedAt(x: number, y: number): boolean {
         return false
     }
 
     public getLabelPosition(): { x: number; y: number } {
-        throw new Error("Method not implemented.")
+        return {x: this.endX, y: this.endY}
+    }
+
+    public setLabelVisibility(b: boolean): void {
+        this.isLabelVisible = false
     }
 }
 
@@ -623,8 +632,10 @@ class StateController {
     private circle: Circle
     private state: State
     private isFinal: boolean = false
+    private id: number
     
     constructor(ctx: CanvasRenderingContext2D, id: number, label: string, x: number = 0, y: number = 0) {
+        this.id = id
         this.circle = new Circle(ctx)
         this.state = new State(id)
         this.circle.setPosition(x, y)
@@ -645,6 +656,10 @@ class StateController {
     
     public getState(): State {
         return this.state
+    }
+
+    public getId(): number {
+        return this.id
     }
     
     public getName(): string {
@@ -695,6 +710,11 @@ class StateController {
     public isClickedAt(x: number, y: number): boolean {
         return this.circle.isPointInside(x, y)
     }
+
+    public dwarf(): void {
+        this.setHideLabel(true)
+        this.circle.dwarf()
+    }
 }
 
 class UnionComposite {
@@ -702,9 +722,11 @@ class UnionComposite {
     private fromState: StateController | undefined
     private toState: StateController
     private arrow: Arrow
+    private id: number
 
-    constructor(ctx: CanvasRenderingContext2D, fromState: StateController | undefined, toState: StateController) {
+    constructor(ctx: CanvasRenderingContext2D, id: number, fromState: StateController | undefined, toState: StateController) {
         this.ctx = ctx
+        this.id = id
         this.fromState = fromState
         this.toState = toState
         let arrowFactory: ArrowFactory = new ArrowFactory(this.ctx, fromState, toState)
@@ -756,9 +778,13 @@ class UnionComposite {
     public getArrow(): Arrow {
         return this.arrow
     }
+    
+    public getId(): number {
+        return this.id
+    }
 
-    public setHideLabel(b: boolean): void {
-        this.arrow.setHideLabel(b)
+    public setLabelVisible(b: boolean): void {
+        this.arrow.setLabelVisibility(b)
     }
 
     private getLabelsOf(unions: Array<Union>): String[] {
@@ -776,26 +802,30 @@ class UnionComposite {
     }
 
     public isClickedAt(x: number, y: number): boolean {
-        return this.arrow.isCurveClicked(x, y)
+        return this.arrow.isCurveClickedAt(x, y)
     }
 
     public isLabelClickedAt(x: number, y: number): boolean {
-        return this.arrow.isPointInsideLabel(x, y)
+        return this.arrow.isLabelClickedAt(x, y)
     }
 
     public recalculateCurveViaDraggingPointAt(x: number, y: number): void {
         this.arrow.recalculateCurveViaDraggingPointAt(x, y)
     }
+
+    public isLabelVisible(): boolean {
+        return this.arrow.getLabelVisibility()
+    }
 }
 
 const run_animation_btn = <HTMLButtonElement> document.querySelector('.run_animation_btn')
-const canvas = <HTMLCanvasElement> document.getElementById("myCanvas")
+const canvas = <HTMLCanvasElement> document.getElementById("canvas")
 const ctx = <CanvasRenderingContext2D> canvas.getContext("2d")
 
 let mousePos: {x: number, y: number}
 
 // Function to get the mouse position relative to the canvas
-function getMousePos(canvas: HTMLCanvasElement, event: MouseEvent): {x: number, y: number} {
+function getMousePos(event: MouseEvent): {x: number, y: number} {
     const rect = canvas.getBoundingClientRect()
     const scaleX = canvas.width / rect.width
     const scaleY = canvas.height / rect.height
@@ -813,6 +843,7 @@ class AutomataController {
     private initialState: StateController | undefined
     private currentState: StateController | undefined
     private finalStates: Array<StateController> = new Array<StateController>
+    private dwarfState: StateController | undefined
 
     constructor(ctx: CanvasRenderingContext2D) {
         this.ctx = ctx
@@ -824,14 +855,37 @@ class AutomataController {
         return state
     }
 
-    public join(nameFromState: string, nameToState: string, symbol: string): boolean {
-        let fromState: StateController | undefined = this.findState(nameFromState)
-        if (fromState == undefined) return false
-        let toState: StateController | undefined = this.findState(nameToState)
-        if (toState == undefined) return false
+    // The dwarf state is an auxiliary state whose purpose is to be 
+    // the guide of a new union being created between two existing states
+    // It's called 'dwarf' because on canvas it is a really tiny circle 
+    public createDwarfState(x: number, y: number): StateController {
+        let dwarfState = new StateController(this.ctx, this.states.length, 'dwarf', x, y)
+        this.states.push(dwarfState)
+        this.dwarfState = dwarfState
+        this.dwarfState.dwarf()
+        return dwarfState
+    }
+
+    private findState(state: StateController | string): StateController | undefined {
+        if (typeof state === "string") {
+            return this.findStateByName(state)
+        } else {
+            return state
+        }
+    }
+
+    public join(fromState: StateController | string, toState: StateController | string, symbol: string): boolean {
+        let foundState: StateController | undefined
+        foundState = this.findState(fromState)
+        if (foundState == undefined) return false
+        fromState = foundState
+
+        foundState = this.findState(toState)
+        if (foundState == undefined) return false
+        toState = foundState
 
         // TODO Fix in case a fromState AND toState AND symbol is duplicate
-        // The automata notifies each state everytime a join is made  
+        // The automata notifies each state everytime a join is made
         fromState.joinWasPerformed(toState, symbol)
         // At the same time it is ensured that there are no union duplicates  
         for (let union of this.unions) {
@@ -839,16 +893,20 @@ class AutomataController {
                 return true
             }
         }
-        this.unions.push(new UnionComposite(ctx, fromState, toState))
+        this.unions.push(new UnionComposite(ctx, this.unions.length, fromState, toState))
         return true
     }
 
     // Disjoin will not perform the removal of the union composite, it should not be its duty
-    public disjoin(nameFromState: string, nameToState: string, symbol: string): boolean {
-        let fromState: StateController | undefined = this.findState(nameFromState)
-        if (fromState == undefined) return false
-        let toState: StateController | undefined = this.findState(nameToState)
-        if (toState == undefined) return false
+    public disjoin(fromState: StateController | string, toState: StateController | string, symbol: string): boolean {
+        let foundState: StateController | undefined
+        foundState = this.findState(fromState)
+        if (foundState == undefined) return false
+        fromState = foundState
+
+        foundState = this.findState(toState)
+        if (foundState == undefined) return false
+        toState = foundState
 
         fromState.disjoinWasPerformed(toState, symbol)
         return true
@@ -856,22 +914,45 @@ class AutomataController {
 
     public removeUnionComposite(unionComposite: UnionComposite): boolean {
         let stateFrom = unionComposite.getStateFrom()
-        if (stateFrom == undefined) return false
+        if (stateFrom == undefined) return this.removeInitialState()
 
         for (let union of unionComposite.getUnions()) {
             this.disjoin(stateFrom.getName(), unionComposite.getStateTo().getName(), union.getSymbol())
         }
 
         return this.unions.splice(this.unions.indexOf(unionComposite), 1).length > 0
-
-        // for (let union of this.unions) {
-        //     if (union.getStateFrom() == fromState && union.getStateTo() == toState) {
-        //         this.unions.splice(this.unions.indexOf(union), 1)
-        //     }
-        // }
     }
 
-    private findState(name: string): StateController | undefined {
+    public removeState(state: StateController | string): boolean {
+        let foundState: StateController | undefined = this.findState(state)
+        if (foundState == undefined) return false
+        state = foundState
+
+        let unionsToRemove: Array<UnionComposite> = []
+        
+        for (let unionComposite of this.getUnionComposites()) {
+            if (unionComposite.getStateFrom() == state || unionComposite.getStateTo() == state) {
+                unionsToRemove.push(unionComposite)
+            }
+        }
+        
+        for (let unionComposite of unionsToRemove) {
+            this.removeUnionComposite(unionComposite)
+        }
+
+        return this.states.splice(this.states.indexOf(state), 1).length > 0
+    }
+
+    public removeDwarfState(): boolean {
+        if (this.dwarfState == undefined) return false
+        return this.removeState(this.dwarfState)
+    }
+
+    public getDwarfState(): StateController | undefined {
+        return this.dwarfState
+    }
+
+    public findStateByName(name: string): StateController | undefined {
         for (let state of this.states) {
             if (state.getName() == name) {
                 return state
@@ -880,30 +961,49 @@ class AutomataController {
         return undefined
     }
 
-    public setInitialState(name: string): boolean {
-        let state: StateController | undefined = this.findState(name)
-        if (state == undefined) return false
+    public setInitialState(state: StateController| string): boolean {
+        let foundState: StateController | undefined = this.findState(state)
+        if (foundState == undefined) return false
+        state = foundState
+
         this.initialState = state
         this.removeInitialState()
-        this.unions.push(new UnionComposite(ctx, undefined, state))
+        this.unions.push(new UnionComposite(ctx, this.unions.length, undefined, state))
         this.currentState = state
         return true
     }
 
-    private removeInitialState() {
+    private removeInitialState(): boolean{
         for (let union of this.unions) {
             if (union.getStateFrom() == undefined) {
-                this.unions.splice(this.unions.indexOf(union), 1)
+                return this.unions.splice(this.unions.indexOf(union), 1).length > 0
             }
         }
+        return false
     }
 
-    public addFinalState(name: string): boolean {
-        let state: StateController | undefined = this.findState(name)
-        if (state == undefined) return false
+    public addFinalState(state: StateController): boolean {
         this.finalStates.push(state)
         state.setFinal(true)
         return true
+    }
+
+    public removeFinalState(state: StateController): boolean {
+        state.setFinal(false)
+        this.finalStates.splice(this.finalStates.indexOf(state), 1)
+        return true
+    }
+
+    public setFinalState(state: StateController | string): boolean {
+        let foundState: StateController | undefined = this.findState(state)
+        if (foundState == undefined) return false
+        state = foundState
+
+        if (state.isFinalState()) {
+            return this.removeFinalState(state)
+        } else {
+            return this.addFinalState(state)
+        }
     }
 
     public getControllerFromState(state: State): StateController | undefined {
@@ -956,6 +1056,15 @@ class AutomataController {
 
     public setCurrentState(state: StateController | undefined): void {
         this.currentState = state
+    }
+
+    public findUnionComposite(fromState: StateController, toState: StateController): UnionComposite | null {
+        for (let unionComposite of this.unions) {
+            if (unionComposite.getStateFrom() == fromState && unionComposite.getStateTo() == toState) {
+                return unionComposite
+            }
+        }
+        return null
     }
 }
 
@@ -1055,7 +1164,7 @@ sample1_btn.addEventListener('click', () => {
     b.setPosition(500, 300)
 
     automata.setInitialState('a')
-    automata.addFinalState('b')
+    automata.setFinalState('b')
 
     automata.join('a', 'a', '0')
     automata.join('a', 'b', '1')
@@ -1063,6 +1172,7 @@ sample1_btn.addEventListener('click', () => {
     automata.join('b', 'b', '0')
 
     automata.drawElements()
+    reloadCanvas()
 })
 
 const sample2_btn = <HTMLButtonElement> document.querySelector('.sample2_btn')
@@ -1077,8 +1187,8 @@ sample2_btn.addEventListener('click', () => {
     let u = automata.createState('u')
 
     automata.setInitialState('q')
-    automata.addFinalState('t')
-    automata.addFinalState('u')
+    automata.setFinalState('t')
+    automata.setFinalState('u')
 
     q.setPosition(100, 300)
     r.setPosition(100, 500)
@@ -1102,6 +1212,7 @@ sample2_btn.addEventListener('click', () => {
     automata.join('u', 'u', 'b')
 
     automata.drawElements()
+    reloadCanvas()
 })
 
 const sample3_btn = <HTMLButtonElement> document.querySelector('.sample3_btn')
@@ -1121,8 +1232,8 @@ sample3_btn.addEventListener('click', () => {
     automata.createState('9', 700, 500)
 
     automata.setInitialState('0')
-    automata.addFinalState('4')
-    automata.addFinalState('8')
+    automata.setFinalState('4')
+    automata.setFinalState('8')
 
     automata.join('0', '1', 'a')
     automata.join('0', '0', 'b')
@@ -1165,6 +1276,7 @@ sample3_btn.addEventListener('click', () => {
     automata.join('9', '8', 'c')
 
     automata.drawElements()
+    reloadCanvas()
 })
 
 const sample4_btn = <HTMLButtonElement> document.querySelector('.sample4_btn')
@@ -1176,18 +1288,20 @@ sample4_btn.addEventListener('click', () => {
     automata.createState('1', 500, 500)
 
     automata.setInitialState('0')
-    automata.addFinalState('1')
+    automata.setFinalState('1')
     
     automata.join('0', '1', 'a')
 
     automata.drawElements()
+    reloadCanvas()
 })
 
-sample1_btn.click()
+sample4_btn.click()
 
 const test_btn = <HTMLButtonElement> document.querySelector('.test_btn')
 test_btn.addEventListener('click', () => {
     console.log("Test button pressed!")
+    automata.clear()
     reloadCanvas()
 })
 
@@ -1200,7 +1314,7 @@ run_animation_btn.addEventListener('click', () => {
 })
 
 canvas.addEventListener("click", (event) => {
-    mousePos = getMousePos(canvas, event)
+    mousePos = getMousePos(event)
     console.log("Clicked at x: " + mousePos.x + " y: " + mousePos.y)
 })
 
@@ -1210,43 +1324,59 @@ function reloadCanvas() {
     automata.drawElements()
 }
 
-// Create a variable to store the clicked state
+let selectedFromState: StateController | null = null
 let selectedState: StateController | null = null
-let draggingCircle: boolean = false
+let stateHasBeenSelected: boolean = false
+let stateHasBeenDragged: boolean = false
 
-// Create a variable to store the clicked union
 let selectedUnionComposite: UnionComposite | null = null
-let draggingArrow: boolean = false
+let unionHasBeenSelected: boolean = false
 
+let unionHasBeenDragged: boolean = false
+let unionIsBeingCreated: boolean = false
+
+let stateLabelIsBeingEdited: boolean = false
 let stateLabelCurrentPosition: {x: number, y: number} | null = null
+let unionLabelIsBeingEdited: boolean = false
 let unionLabelCurrentPosition: {x: number, y: number} | null = null
 
-// Moving an arrow event
+// Moving a state event
 canvas.addEventListener('mousedown', (event) => {
-    mousePos = getMousePos(canvas, event)
-
-    if (!draggingArrow) {
-        for (let union of automata.getUnionComposites()) {
-            if (union.isClickedAt(mousePos.x, mousePos.y)) {
-                // Store a reference to the clicked arrow and set the dragging flag
-                selectedUnionComposite = union
-                draggingArrow = true
+    if (!stateHasBeenSelected && !stateLabelIsBeingEdited) {
+        mousePos = getMousePos(event)
+        for (let state of automata.getStates()) {
+            if (state.isClickedAt(mousePos.x, mousePos.y)) {
+                selectedState = state
+                stateHasBeenSelected = true
                 break
             }
         }
     }
 })
 
-// Moving a state event
+// Moving an arrow event
 canvas.addEventListener('mousedown', (event) => {
-    mousePos = getMousePos(canvas, event)
+    if (!unionHasBeenSelected && !stateHasBeenSelected && !unionLabelIsBeingEdited) {
+        mousePos = getMousePos(event)
+        for (let unionComposite of automata.getUnionComposites()) {
+            if (unionComposite.isClickedAt(mousePos.x, mousePos.y)) {
+                selectedUnionComposite = unionComposite
+                unionHasBeenSelected = true
+                break
+            }
+        }
+    }
+})
 
-    if (!draggingCircle) {
+canvas.addEventListener('mousedown', (event) => {
+    if (!unionIsBeingCreated) {
+        mousePos = getMousePos(event)
         for (let state of automata.getStates()) {
-            if (state.isClickedAt(mousePos.x, mousePos.y)) {
-                // Store a reference to the clicked state and set the dragging flag
-                selectedState = state
-                draggingCircle = true
+            if (event.shiftKey && state.isClickedAt(mousePos.x, mousePos.y)) {
+                unionIsBeingCreated = true
+                selectedState = automata.createDwarfState(mousePos.x, mousePos.y)
+                selectedFromState = state
+                automata.join(state, selectedState, '')
                 break
             }
         }
@@ -1254,70 +1384,101 @@ canvas.addEventListener('mousedown', (event) => {
 })
 
 canvas.addEventListener('mousemove', (event) => {
-    if (draggingCircle) {
-        mousePos = getMousePos(canvas, event)
-        selectedState?.setPosition(mousePos.x, mousePos.y)
+    if (stateHasBeenSelected) {
+        if (selectedState == null) return
+        stateHasBeenDragged = true
+        const previusMousePos = mousePos
+        mousePos = getMousePos(event)
+        const dx = mousePos.x - previusMousePos.x
+        const dy = mousePos.y - previusMousePos.y
+        const currentStatePosition = selectedState.getPosition()
+        selectedState.setPosition(currentStatePosition.x + dx, currentStatePosition.y + dy)
         reloadCanvas()
     }
 })
 
 canvas.addEventListener('mousemove', (event) => {
-    if (draggingArrow && !draggingCircle) {
-        mousePos = getMousePos(canvas, event)
-        selectedUnionComposite?.recalculateCurveViaDraggingPointAt(mousePos.x, mousePos.y)
+    if (unionHasBeenSelected && !stateHasBeenSelected) {
+        if (selectedUnionComposite == null) return
+        unionHasBeenDragged = true
+        mousePos = getMousePos(event)
+        selectedUnionComposite.recalculateCurveViaDraggingPointAt(mousePos.x, mousePos.y)
         reloadCanvas()
     }
 })
 
 canvas.addEventListener('mouseup', (event) => {
-    selectedUnionComposite = null
-    draggingArrow = false
-
-    selectedState = null
-    draggingCircle = false
-
     stateLabelCurrentPosition = null
+    unionLabelCurrentPosition = null
+    unionHasBeenSelected = false
+    stateHasBeenSelected = false
+    
+    if (unionIsBeingCreated) {
+        mousePos = getMousePos(event)
+        for (let state of automata.getStates()) {
+            if (state.isClickedAt(mousePos.x, mousePos.y) && state != automata.getDwarfState()) {
+                if (selectedState != null && selectedFromState != null) {
+                    automata.join(selectedFromState, state, '')
+                    selectedUnionComposite = automata.findUnionComposite(selectedFromState, state)
+                    displayUnionLabelInputBox(selectedUnionComposite)
+                }
+            }
+        }
+        automata.removeDwarfState()
+        reloadCanvas()
+    }
+
+    // If a union has not been dragged then only has been tapped on
+    if (!unionHasBeenDragged) {
+        selectedUnionComposite?.setLabelVisible(false)
+        reloadCanvas()
+        selectedUnionComposite?.setLabelVisible(true)
+        
+        displayUnionLabelInputBox(selectedUnionComposite)
+    } else {
+        selectedUnionComposite = null
+    }
+    
+    unionHasBeenDragged = false
+    
+    // If a state has not been dragged then only has been tapped on
+    if (!stateHasBeenDragged) {
+        selectedState?.setHideLabel(true)
+        reloadCanvas()
+        selectedState?.setHideLabel(false)
+        
+        displayStateLabelInputBox(selectedState)
+    } else {
+        selectedState = null
+    }
+    
+    stateHasBeenDragged = false
+
+    unionIsBeingCreated = false
+    selectedFromState = null
 })
 
 canvas.addEventListener('dblclick', (event) => {
-    mousePos = getMousePos(canvas, event)
+    mousePos = getMousePos(event)
 
     for (let state of automata.getStates()) {
         if (state.isClickedAt(mousePos.x, mousePos.y)) {
-            selectedState = state
-
-            selectedState.setHideLabel(true)
-            reloadCanvas()
-            selectedState.setHideLabel(false)
-
-            displayStateLabelInputBox(selectedState)
-            return
-        }
-    }
-
-    for (let union of automata.getUnionComposites()) {
-        if (union.isLabelClickedAt(mousePos.x, mousePos.y)) {
-            selectedUnionComposite = union
-
-            selectedUnionComposite.setHideLabel(true)
-            reloadCanvas()
-            selectedUnionComposite.setHideLabel(false)
-
-            displayUnionLabelInputBox(selectedUnionComposite)            
+            automata.setInitialState(state)
             return
         }
     }
 
     selectedState = automata.createState('', mousePos.x, mousePos.y)
     displayStateLabelInputBox(selectedState)
-    console.log("A state was created")
     reloadCanvas()
 })
 
-let stateLabelBox = document.getElementById('stateLabelBox') as HTMLTextAreaElement
-let unionLabelBox = document.getElementById('unionLabelBox') as HTMLTextAreaElement
+let stateLabelBox = document.getElementById('stateLabelBox') as HTMLInputElement
+let unionLabelBox = document.getElementById('unionLabelBox') as HTMLInputElement
 
-function displayUnionLabelInputBox(unionComposite: UnionComposite): void {
+function displayUnionLabelInputBox(unionComposite: UnionComposite | null): void {
+    if (unionComposite == null) return
+    unionLabelIsBeingEdited = true
     let labelPos = unionComposite.getArrow().getLabelPosition()
     unionLabelCurrentPosition = labelPos
     
@@ -1327,7 +1488,9 @@ function displayUnionLabelInputBox(unionComposite: UnionComposite): void {
     unionLabelBox.focus()
 }
 
-function displayStateLabelInputBox(state: StateController): void {
+function displayStateLabelInputBox(state: StateController | null): void {
+    if (state == null) return
+    stateLabelIsBeingEdited = true
     let labelPos = state.getPosition()
     stateLabelCurrentPosition = labelPos
 
@@ -1337,7 +1500,7 @@ function displayStateLabelInputBox(state: StateController): void {
     stateLabelBox.focus()
 }
 
-stateLabelBox.addEventListener('input', (event) => {
+stateLabelBox.addEventListener('input', () => {
     if (stateLabelCurrentPosition == null) return 
     const inputWidth = stateLabelBox.value.length * 10
 
@@ -1351,10 +1514,23 @@ stateLabelBox.addEventListener('keydown', (event) => {
 })
 
 stateLabelBox.addEventListener('blur', () => {
+    stateLabelBox.value = stateLabelBox.value.trim()
+    if (stateLabelBox.value == '') {
+        console.log("State label not valid")
+        stateLabelBox.style.display = 'none'
+
+        selectedState = null
+        stateLabelIsBeingEdited = false
+        return
+    }
+
     selectedState?.setName(stateLabelBox.value)
     stateLabelBox.style.display = 'none'
     stateLabelBox.value = ''
     reloadCanvas()
+
+    selectedState = null
+    stateLabelIsBeingEdited = false
 })
 
 unionLabelBox.addEventListener('keydown', (event) => {
@@ -1369,6 +1545,9 @@ unionLabelBox.addEventListener('blur', () => {
         console.log("Union label not valid")
         unionLabelBox.style.display = 'none'
         reloadCanvas()
+
+        selectedUnionComposite = null
+        unionLabelIsBeingEdited = false        
         return
     }
     
@@ -1382,11 +1561,11 @@ unionLabelBox.addEventListener('blur', () => {
     // 3. Add new unions based on the input box value
 
     for (let union of selectedUnionComposite.getUnions()) {
-        automata.disjoin(stateFrom.getName(), selectedUnionComposite.getStateTo().getName(), union.getSymbol())
+        automata.disjoin(stateFrom, selectedUnionComposite.getStateTo(), union.getSymbol())
     }
 
     for (let symbol of unionLabelBox.value.split(',')) {
-        automata.join(stateFrom.getName(), selectedUnionComposite.getStateTo().getName(), symbol)
+        automata.join(stateFrom, selectedUnionComposite.getStateTo(), symbol)
     }
 
     // Reset the input box
@@ -1395,7 +1574,6 @@ unionLabelBox.addEventListener('blur', () => {
     reloadCanvas()
 
     selectedUnionComposite = null
+    unionLabelIsBeingEdited = false
 })
-
-
 
