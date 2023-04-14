@@ -68,7 +68,7 @@ class Circle {
         this.highlightFill = 'orange';
         this.hasInnerCircle = false;
         this.isHighlighted = false;
-        this.isLabelHidden = false;
+        this.isLabelVisible = true;
         this.ctx = ctx;
     }
     getX() {
@@ -95,7 +95,7 @@ class Circle {
     }
     draw() {
         this.drawCircle();
-        if (!this.isLabelHidden)
+        if (this.isLabelVisible)
             this.drawLabel();
         if (this.hasInnerCircle)
             this.drawInnerCircle();
@@ -144,8 +144,8 @@ class Circle {
     setHighlight(b) {
         this.isHighlighted = b;
     }
-    setHideLabel(b) {
-        this.isLabelHidden = b;
+    setLabelVisibility(b) {
+        this.isLabelVisible = b;
     }
     dwarf() {
         this.radius = this.radius * 0.1;
@@ -437,7 +437,8 @@ class LoopingArrow extends Arrow {
     isCurveClickedAt(x, y) {
         const dx = this.controlPointX - x;
         const dy = this.controlPointY - y;
-        return dx * dx + dy * dy <= this.arrowRadius ** 2 || this.isLabelClickedAt(x, y);
+        let isPointInsideArrowArea = dx * dx + dy * dy <= this.arrowRadius ** 2;
+        return (isPointInsideArrowArea && !this.circleFrom.isPointInside(x, y)) || this.isLabelClickedAt(x, y);
     }
     recalculateCurveViaDraggingPointAt(x, y) {
         this.controlPointParameter = this.angleBetweenPoints(this.circleFrom.getX(), this.circleFrom.getY(), x, y);
@@ -457,6 +458,7 @@ class InitialArrow extends Arrow {
         this.ctx.moveTo(this.startX, this.startY);
         this.ctx.lineTo(this.endX, this.endY);
         this.ctx.lineWidth = 1;
+        this.ctx.strokeStyle = this.isHighlighted ? this.highlightColor : this.defaultColor;
         this.ctx.stroke();
         this.drawArrowHead();
     }
@@ -534,12 +536,15 @@ class StateController {
     setName(label) {
         this.circle.setLabel(label);
     }
+    getFinal() {
+        return this.isFinal;
+    }
     setFinal(b) {
         this.isFinal = b;
         this.circle.setInnerCircle(b);
     }
-    setHideLabel(b) {
-        this.circle.setHideLabel(b);
+    setLabelVisibility(b) {
+        this.circle.setLabelVisibility(b);
     }
     isFinalState() {
         return this.isFinal;
@@ -559,6 +564,9 @@ class StateController {
     getPosition() {
         return this.circle.getPosition();
     }
+    getLabelPosition() {
+        return this.circle.getPosition();
+    }
     transition(symbol) {
         return this.state.transition(symbol);
     }
@@ -566,8 +574,11 @@ class StateController {
         return this.circle.isPointInside(x, y);
     }
     dwarf() {
-        this.setHideLabel(true);
+        this.setLabelVisibility(false);
         this.circle.dwarf();
+    }
+    getType() {
+        return "StateController";
     }
 }
 class UnionComposite {
@@ -582,7 +593,7 @@ class UnionComposite {
         this.arrow.setControlPointParameter((Math.random() * 80) * (-1) ** Math.floor(Math.random() * 2));
         this.updateArrow();
     }
-    drawUnion() {
+    draw() {
         let unionsToState = this.getUnionsToState();
         this.updateArrow();
         this.arrow.setLabel(this.getLabelsOf(unionsToState).join(', '));
@@ -618,6 +629,9 @@ class UnionComposite {
     getArrow() {
         return this.arrow;
     }
+    getLabelPosition() {
+        return this.arrow.getLabelPosition();
+    }
     getId() {
         return this.id;
     }
@@ -646,6 +660,12 @@ class UnionComposite {
     isLabelVisible() {
         return this.arrow.getLabelVisibility();
     }
+    setLabelVisibility(b) {
+        this.arrow.setLabelVisibility(b);
+    }
+    getType() {
+        return "UnionComposite";
+    }
 }
 const run_animation_btn = document.querySelector('.run_animation_btn');
 const canvas = document.getElementById("canvas");
@@ -663,24 +683,26 @@ function getMousePos(event) {
 }
 class AutomataController {
     constructor(ctx) {
+        this.elements = new Array;
         this.states = new Array;
         this.unions = new Array;
         this.finalStates = new Array;
         this.ctx = ctx;
     }
     createState(name, x = 0, y = 0) {
-        let state = new StateController(this.ctx, this.states.length, name, x, y);
+        let state = new StateController(this.ctx, this.getNewId(), name, x, y);
         this.states.push(state);
+        this.elements.push(state);
         return state;
     }
     // The dwarf state is an auxiliary state whose purpose is to be 
     // the guide of a new union being created between two existing states
-    // It's called 'dwarf' because on canvas it is a really tiny circle 
+    // It's called 'dwarf' because on canvas it is a really tiny state 
     createDwarfState(x, y) {
-        let dwarfState = new StateController(this.ctx, this.states.length, 'dwarf', x, y);
+        let dwarfState = new StateController(this.ctx, -1, 'dwarf', x, y);
         this.states.push(dwarfState);
-        this.dwarfState = dwarfState;
-        this.dwarfState.dwarf();
+        this.elements.push(dwarfState);
+        dwarfState.dwarf();
         return dwarfState;
     }
     findState(state) {
@@ -705,12 +727,14 @@ class AutomataController {
         // The automata notifies each state everytime a join is made
         fromState.joinWasPerformed(toState, symbol);
         // At the same time it is ensured that there are no union duplicates  
-        for (let union of this.unions) {
-            if (union.getStateFrom() == fromState && union.getStateTo() == toState) {
+        for (let unionComposite of this.unions) {
+            if (unionComposite.getStateFrom() == fromState && unionComposite.getStateTo() == toState) {
                 return true;
             }
         }
-        this.unions.push(new UnionComposite(ctx, this.unions.length, fromState, toState));
+        let unionComposite = new UnionComposite(ctx, this.getNewId(), fromState, toState);
+        this.unions.push(unionComposite);
+        this.elements.push(unionComposite);
         return true;
     }
     // Disjoin will not perform the removal of the union composite, it should not be its duty
@@ -734,7 +758,27 @@ class AutomataController {
         for (let union of unionComposite.getUnions()) {
             this.disjoin(stateFrom.getName(), unionComposite.getStateTo().getName(), union.getSymbol());
         }
-        return this.unions.splice(this.unions.indexOf(unionComposite), 1).length > 0;
+        let splicedUnion = this.unions.splice(this.unions.indexOf(unionComposite), 1);
+        let splicedElement = this.elements.splice(this.indexOfElement(unionComposite), 1);
+        return splicedUnion.length == 1 &&
+            splicedElement.length == 1;
+    }
+    indexOfElement(thisElement) {
+        for (let index = 0; index < this.elements.length; index++) {
+            if (this.elements[index].getId() == thisElement.getId()) {
+                return index;
+            }
+        }
+        return -1;
+    }
+    getNewId() {
+        let max = -1;
+        for (let element of this.elements) {
+            if (max < element.getId()) {
+                max = element.getId();
+            }
+        }
+        return max + 1;
     }
     removeState(state) {
         let foundState = this.findState(state);
@@ -750,15 +794,24 @@ class AutomataController {
         for (let unionComposite of unionsToRemove) {
             this.removeUnionComposite(unionComposite);
         }
-        return this.states.splice(this.states.indexOf(state), 1).length > 0;
+        let splicedState = this.states.splice(this.states.indexOf(state), 1);
+        let splicedElement = this.elements.splice(this.indexOfElement(state), 1);
+        return splicedState.length == 1 &&
+            splicedElement.length == 1;
     }
     removeDwarfState() {
-        if (this.dwarfState == undefined)
-            return false;
-        return this.removeState(this.dwarfState);
+        let dwarfState = this.getDwarfState();
+        if (dwarfState != undefined)
+            return this.removeState(dwarfState);
+        return false;
     }
     getDwarfState() {
-        return this.dwarfState;
+        for (let state of this.states) {
+            if (state.getId() == -1) {
+                return state;
+            }
+        }
+        return undefined;
     }
     findStateByName(name) {
         for (let state of this.states) {
@@ -773,16 +826,22 @@ class AutomataController {
         if (foundState == undefined)
             return false;
         state = foundState;
-        this.initialState = state;
         this.removeInitialState();
-        this.unions.push(new UnionComposite(ctx, this.unions.length, undefined, state));
+        this.initialState = state;
+        let unionComposite = new UnionComposite(ctx, this.getNewId(), undefined, state);
+        this.unions.push(unionComposite);
+        this.elements.push(unionComposite);
         this.currentState = state;
         return true;
     }
     removeInitialState() {
-        for (let union of this.unions) {
-            if (union.getStateFrom() == undefined) {
-                return this.unions.splice(this.unions.indexOf(union), 1).length > 0;
+        for (let unionComposite of this.unions) {
+            if (unionComposite.getStateFrom() == undefined) {
+                console.log(unionComposite);
+                let splicedUnion = this.unions.splice(this.unions.indexOf(unionComposite), 1);
+                let splicedElement = this.elements.splice(this.indexOfElement(unionComposite), 1);
+                return splicedUnion.length == 1 &&
+                    splicedElement.length == 1;
             }
         }
         return false;
@@ -823,13 +882,17 @@ class AutomataController {
     getStates() {
         return this.states;
     }
+    getElements() {
+        return this.elements;
+    }
     drawElements() {
-        this.drawUnions();
-        this.drawStates();
+        for (let element of this.elements) {
+            element.draw();
+        }
     }
     drawUnions() {
         for (let union of this.unions) {
-            union.drawUnion();
+            union.draw();
         }
     }
     drawStates() {
@@ -838,8 +901,9 @@ class AutomataController {
         }
     }
     clear() {
-        this.states = new Array;
-        this.unions = new Array;
+        this.states.length = 0;
+        this.unions.length = 0;
+        this.elements.length = 0;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
     getCurrentState() {
@@ -858,6 +922,33 @@ class AutomataController {
             }
         }
         return null;
+    }
+}
+class ElementsQueue {
+    constructor(automata) {
+        this.automata = automata;
+        this.elements = automata.getElements();
+    }
+    getElements() {
+        return this.elements;
+    }
+    getReversedElements() {
+        let reversed = new Array;
+        for (let index = this.elements.length - 1; index >= 0; index--) {
+            reversed.push(this.elements[index]);
+        }
+        return reversed;
+    }
+    setTop(element) {
+        if (this.contains(element)) {
+            let elementIndex = this.automata.indexOfElement(element);
+            this.elements.push(this.elements.splice(elementIndex, 1)[0]);
+            return true;
+        }
+        return false;
+    }
+    contains(thisElement) {
+        return this.automata.indexOfElement(thisElement) > -1;
     }
 }
 class AutomataAnimator {
@@ -938,6 +1029,7 @@ class AutomataAnimator {
     }
 }
 let automata = new AutomataController(ctx);
+let elementsQueue = new ElementsQueue(automata);
 const sample1_btn = document.querySelector('.sample1_btn');
 sample1_btn.addEventListener('click', () => {
     console.log("Sample 1 button pressed!");
@@ -1051,8 +1143,9 @@ sample4_btn.click();
 const test_btn = document.querySelector('.test_btn');
 test_btn.addEventListener('click', () => {
     console.log("Test button pressed!");
-    automata.clear();
-    reloadCanvas();
+    console.log(automata.getStates());
+    console.log(automata.getUnionComposites());
+    console.log(automata.getElements());
 });
 let wordInputBox = document.getElementById('wordInputBox');
 run_animation_btn.addEventListener('click', () => {
@@ -1069,227 +1162,239 @@ function reloadCanvas() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     automata.drawElements();
 }
-let selectedFromState = null;
-let selectedState = null;
-let stateHasBeenSelected = false;
-let stateHasBeenDragged = false;
-let selectedUnionComposite = null;
-let unionHasBeenSelected = false;
-let unionHasBeenDragged = false;
-let unionIsBeingCreated = false;
-let stateLabelIsBeingEdited = false;
-let stateLabelCurrentPosition = null;
-let unionLabelIsBeingEdited = false;
-let unionLabelCurrentPosition = null;
-// Moving a state event
-canvas.addEventListener('mousedown', (event) => {
-    if (!stateHasBeenSelected && !stateLabelIsBeingEdited) {
-        mousePos = getMousePos(event);
-        for (let state of automata.getStates()) {
-            if (state.isClickedAt(mousePos.x, mousePos.y)) {
-                selectedState = state;
-                stateHasBeenSelected = true;
-                break;
-            }
-        }
-    }
-});
-// Moving an arrow event
-canvas.addEventListener('mousedown', (event) => {
-    if (!unionHasBeenSelected && !stateHasBeenSelected && !unionLabelIsBeingEdited) {
-        mousePos = getMousePos(event);
-        for (let unionComposite of automata.getUnionComposites()) {
-            if (unionComposite.isClickedAt(mousePos.x, mousePos.y)) {
-                selectedUnionComposite = unionComposite;
-                unionHasBeenSelected = true;
-                break;
-            }
-        }
-    }
-});
-canvas.addEventListener('mousedown', (event) => {
-    if (!unionIsBeingCreated) {
-        mousePos = getMousePos(event);
-        for (let state of automata.getStates()) {
-            if (event.shiftKey && state.isClickedAt(mousePos.x, mousePos.y)) {
-                unionIsBeingCreated = true;
-                selectedState = automata.createDwarfState(mousePos.x, mousePos.y);
-                selectedFromState = state;
-                automata.join(state, selectedState, '');
-                break;
-            }
-        }
-    }
-});
-canvas.addEventListener('mousemove', (event) => {
-    if (stateHasBeenSelected) {
-        if (selectedState == null)
-            return;
-        stateHasBeenDragged = true;
-        const previusMousePos = mousePos;
-        mousePos = getMousePos(event);
-        const dx = mousePos.x - previusMousePos.x;
-        const dy = mousePos.y - previusMousePos.y;
-        const currentStatePosition = selectedState.getPosition();
-        selectedState.setPosition(currentStatePosition.x + dx, currentStatePosition.y + dy);
-        reloadCanvas();
-    }
-});
-canvas.addEventListener('mousemove', (event) => {
-    if (unionHasBeenSelected && !stateHasBeenSelected) {
-        if (selectedUnionComposite == null)
-            return;
-        unionHasBeenDragged = true;
-        mousePos = getMousePos(event);
-        selectedUnionComposite.recalculateCurveViaDraggingPointAt(mousePos.x, mousePos.y);
-        reloadCanvas();
-    }
-});
-canvas.addEventListener('mouseup', (event) => {
-    stateLabelCurrentPosition = null;
-    unionLabelCurrentPosition = null;
-    unionHasBeenSelected = false;
-    stateHasBeenSelected = false;
-    if (unionIsBeingCreated) {
-        mousePos = getMousePos(event);
-        for (let state of automata.getStates()) {
-            if (state.isClickedAt(mousePos.x, mousePos.y) && state != automata.getDwarfState()) {
-                if (selectedState != null && selectedFromState != null) {
-                    automata.join(selectedFromState, state, '');
-                    selectedUnionComposite = automata.findUnionComposite(selectedFromState, state);
-                    displayUnionLabelInputBox(selectedUnionComposite);
-                }
-            }
-        }
-        automata.removeDwarfState();
-        reloadCanvas();
-    }
-    // If a union has not been dragged then only has been tapped on
-    if (!unionHasBeenDragged) {
-        selectedUnionComposite === null || selectedUnionComposite === void 0 ? void 0 : selectedUnionComposite.setLabelVisible(false);
-        reloadCanvas();
-        selectedUnionComposite === null || selectedUnionComposite === void 0 ? void 0 : selectedUnionComposite.setLabelVisible(true);
-        displayUnionLabelInputBox(selectedUnionComposite);
-    }
-    else {
-        selectedUnionComposite = null;
-    }
-    unionHasBeenDragged = false;
-    // If a state has not been dragged then only has been tapped on
-    if (!stateHasBeenDragged) {
-        selectedState === null || selectedState === void 0 ? void 0 : selectedState.setHideLabel(true);
-        reloadCanvas();
-        selectedState === null || selectedState === void 0 ? void 0 : selectedState.setHideLabel(false);
-        displayStateLabelInputBox(selectedState);
-    }
-    else {
-        selectedState = null;
-    }
-    stateHasBeenDragged = false;
-    unionIsBeingCreated = false;
-    selectedFromState = null;
-});
-canvas.addEventListener('dblclick', (event) => {
+let selectedElement = null;
+let lastSelectedElement = selectedElement;
+let elementHasBeenDragged = false;
+let joinIsInProcess = false;
+let joinFromState = null;
+canvas.addEventListener('mousedown', handleMouseDown);
+function handleMouseDown(event) {
+    labelBox.blur(); // If the label box is active, then is blurred
+    let element = getFirstClickedElement(event);
+    if (element == null)
+        return;
+    selectedElement = element;
+    lastSelectedElement = selectedElement;
+    if (event.shiftKey && selectedElement.getType() == "StateController")
+        startStateCreation();
+    if (event.ctrlKey && selectedElement.getType() == "StateController")
+        setStateAsFinal();
+    elementsQueue.setTop(selectedElement);
+}
+function startStateCreation() {
+    joinIsInProcess = true;
+    joinFromState = selectedElement;
+    selectedElement = automata.createDwarfState(mousePos.x, mousePos.y);
+    automata.join(joinFromState, selectedElement, '');
+}
+function setStateAsFinal() {
+    let selectedState = selectedElement;
+    selectedState.setFinal(!selectedState.getFinal());
+    reloadCanvas();
+}
+function getFirstClickedElement(event) {
+    return getNthClickedElement(1, event);
+}
+// Return the nth element clicked.
+// e.g. If there are two states overlapped within a click, then the first 
+// state or outermost state is the 1-nth element (nthElement = 1) meanwhile the secondth 
+// state or innermost most is the 2-nth element (nthElement = 2)
+function getNthClickedElement(nthElement, event) {
     mousePos = getMousePos(event);
-    for (let state of automata.getStates()) {
-        if (state.isClickedAt(mousePos.x, mousePos.y)) {
-            automata.setInitialState(state);
-            return;
+    let count = 1;
+    for (let element of elementsQueue.getReversedElements()) {
+        if (element.isClickedAt(mousePos.x, mousePos.y)) {
+            if (count == nthElement) {
+                return element;
+            }
+            else {
+                count++;
+            }
         }
     }
-    selectedState = automata.createState('', mousePos.x, mousePos.y);
-    displayStateLabelInputBox(selectedState);
-    reloadCanvas();
-});
-let stateLabelBox = document.getElementById('stateLabelBox');
-let unionLabelBox = document.getElementById('unionLabelBox');
-function displayUnionLabelInputBox(unionComposite) {
-    if (unionComposite == null)
-        return;
-    unionLabelIsBeingEdited = true;
-    let labelPos = unionComposite.getArrow().getLabelPosition();
-    unionLabelCurrentPosition = labelPos;
-    unionLabelBox.style.left = `${unionLabelCurrentPosition.x + 2}px`;
-    unionLabelBox.style.top = `${unionLabelCurrentPosition.y - 4}px`;
-    unionLabelBox.style.display = 'block';
-    unionLabelBox.focus();
+    return null;
 }
-function displayStateLabelInputBox(state) {
-    if (state == null)
-        return;
-    stateLabelIsBeingEdited = true;
-    let labelPos = state.getPosition();
-    stateLabelCurrentPosition = labelPos;
-    stateLabelBox.style.left = `${stateLabelCurrentPosition.x + 7}px`;
-    stateLabelBox.style.top = `${stateLabelCurrentPosition.y - 7}px`;
-    stateLabelBox.style.display = 'block';
-    stateLabelBox.focus();
+function getFirstNonDwarfClickedState(event) {
+    mousePos = getMousePos(event);
+    for (let element of elementsQueue.getReversedElements()) {
+        if (element.getType() == "StateController") {
+            let state = element;
+            if (state.isClickedAt(mousePos.x, mousePos.y) && state != automata.getDwarfState()) {
+                return state;
+            }
+        }
+    }
+    return null;
 }
-stateLabelBox.addEventListener('input', () => {
-    if (stateLabelCurrentPosition == null)
-        return;
-    const inputWidth = stateLabelBox.value.length * 10;
-    stateLabelBox.style.left = `${stateLabelCurrentPosition.x - inputWidth / 2 + 5}px`;
-});
-stateLabelBox.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' || event.keyCode === 13) {
-        stateLabelBox.blur();
+canvas.addEventListener('mousemove', handleMouseMove);
+function handleMouseMove(event) {
+    if (selectedElement) {
+        elementHasBeenDragged = true;
+        if (selectedElement.getType() == "StateController") {
+            stateIsBeingSelected(event);
+        }
+        else if (selectedElement.getType() == "UnionComposite") {
+            unionIsBeingSelected(event);
+        }
     }
-});
-stateLabelBox.addEventListener('blur', () => {
-    stateLabelBox.value = stateLabelBox.value.trim();
-    if (stateLabelBox.value == '') {
-        console.log("State label not valid");
-        stateLabelBox.style.display = 'none';
-        selectedState = null;
-        stateLabelIsBeingEdited = false;
+}
+function stateIsBeingSelected(event) {
+    if (selectedElement == null)
         return;
-    }
-    selectedState === null || selectedState === void 0 ? void 0 : selectedState.setName(stateLabelBox.value);
-    stateLabelBox.style.display = 'none';
-    stateLabelBox.value = '';
+    let selectedState = selectedElement;
+    const previousMousePos = mousePos;
+    mousePos = getMousePos(event);
+    const dx = mousePos.x - previousMousePos.x;
+    const dy = mousePos.y - previousMousePos.y;
+    const currentStatePosition = selectedState.getPosition();
+    selectedState.setPosition(currentStatePosition.x + dx, currentStatePosition.y + dy);
     reloadCanvas();
-    selectedState = null;
-    stateLabelIsBeingEdited = false;
-});
-unionLabelBox.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' || event.keyCode === 13) {
-        unionLabelBox.blur();
-    }
-});
-unionLabelBox.addEventListener('blur', () => {
-    unionLabelBox.value = unionLabelBox.value.trim();
-    if (unionLabelBox.value == '') {
-        console.log("Union label not valid");
-        unionLabelBox.style.display = 'none';
-        reloadCanvas();
-        selectedUnionComposite = null;
-        unionLabelIsBeingEdited = false;
+}
+function unionIsBeingSelected(event) {
+    if (selectedElement == null)
         return;
-    }
-    if (selectedUnionComposite == null) {
-        console.log("No union composite is selected");
-        return;
-    }
-    let stateFrom = selectedUnionComposite.getStateFrom();
-    if (stateFrom == null) {
-        console.log("stateFrom of the union composite is null");
-        return;
-    }
-    // This is how the next section works:
-    // 1. Get all unions related to the union composite
-    // 2. Disjoin them (exactly the same as deleting them)
-    // 3. Add new unions based on the input box value
-    for (let union of selectedUnionComposite.getUnions()) {
-        automata.disjoin(stateFrom, selectedUnionComposite.getStateTo(), union.getSymbol());
-    }
-    for (let symbol of unionLabelBox.value.split(',')) {
-        automata.join(stateFrom, selectedUnionComposite.getStateTo(), symbol);
-    }
-    // Reset the input box
-    unionLabelBox.value = '';
-    unionLabelBox.style.display = 'none';
+    mousePos = getMousePos(event);
+    let selectedUnion = selectedElement;
+    selectedUnion.recalculateCurveViaDraggingPointAt(mousePos.x, mousePos.y);
     reloadCanvas();
-    selectedUnionComposite = null;
-    unionLabelIsBeingEdited = false;
+}
+canvas.addEventListener('mouseup', handleMouseUp);
+function handleMouseUp(event) {
+    if (joinIsInProcess) {
+        automata.removeDwarfState();
+        joinStates(event);
+    }
+    if (selectedElement && !elementHasBeenDragged)
+        elementClickHandler(event);
+    if (!selectedElement)
+        canvasClickHandler(event);
+    elementHasBeenDragged = false;
+    selectedElement = null;
+    reloadCanvas();
+}
+function joinStates(event) {
+    let joinToState = getFirstNonDwarfClickedState(event);
+    if (joinFromState != null && joinToState != null) {
+        automata.join(joinFromState, joinToState, '');
+    }
+    joinIsInProcess = false;
+    joinFromState = null;
+}
+let clickTimer = -1;
+const doubleClickDelay = 400;
+function elementClickHandler(event) {
+    if (clickTimer < 0) {
+        clickTimer = setTimeout(() => {
+            clickTimer = -1;
+            singleClickOnElementHandler();
+        }, doubleClickDelay);
+    }
+    else {
+        clearTimeout(clickTimer);
+        clickTimer = -1;
+        doubleClickOnElementHandler(event);
+    }
+}
+function canvasClickHandler(event) {
+    if (clickTimer < 0) {
+        clickTimer = setTimeout(() => {
+            clickTimer = -1;
+        }, doubleClickDelay);
+    }
+    else {
+        clearTimeout(clickTimer);
+        clickTimer = -1;
+        doubleClickOnCanvasHandler(event);
+    }
+}
+let labelBox = document.querySelector("#labelBox");
+let labelCurrentPosition = null;
+function singleClickOnElementHandler() {
+    console.log('Single click detected');
+    if (lastSelectedElement == null)
+        return;
+    labelCurrentPosition = lastSelectedElement.getLabelPosition();
+    lastSelectedElement.setLabelVisibility(false);
+    displayElementLabelInputBox();
+    reloadCanvas();
+    lastSelectedElement.setLabelVisibility(true);
+}
+function doubleClickOnCanvasHandler(event) {
+    console.log('Double click detected');
+    selectedElement = automata.createState('', mousePos.x, mousePos.y);
+    lastSelectedElement = selectedElement;
+    labelCurrentPosition = lastSelectedElement.getLabelPosition();
+    displayElementLabelInputBox();
+}
+function doubleClickOnElementHandler(event) {
+    console.log('Double click detected');
+    let element = getFirstClickedElement(event);
+    if (element == null || element.getType() == "UnionComposite")
+        return;
+    automata.setInitialState(element);
+}
+function displayElementLabelInputBox() {
+    if (lastSelectedElement == null)
+        return;
+    let labelPos = lastSelectedElement.getLabelPosition();
+    let shiftX = 0, shiftY = 0;
+    if (lastSelectedElement.getType() == "StateController")
+        shiftX = 7;
+    shiftY = -7;
+    if (lastSelectedElement.getType() == "UnionComposite")
+        shiftX = 2;
+    shiftY = -4;
+    labelBox.style.left = `${labelPos.x + shiftX}px`;
+    labelBox.style.top = `${labelPos.y + shiftY}px`;
+    labelBox.style.display = 'block';
+    labelBox.focus();
+}
+labelBox.addEventListener('input', () => {
+    if (lastSelectedElement == null)
+        return;
+    let inputWidth = ctx.measureText(labelBox.value).width;
+    labelBox.style.width = inputWidth + 'px';
+    labelBox.style.left = `${lastSelectedElement.getLabelPosition().x - inputWidth / 2 + 5}px`;
+});
+labelBox.addEventListener('blur', () => {
+    if (lastSelectedElement == null)
+        return;
+    labelBox.value = labelBox.value.trim();
+    if (labelBox.value == '') {
+        labelBox.style.display = 'none';
+        return;
+    }
+    if (lastSelectedElement.getType() == "StateController") {
+        let selectedState = lastSelectedElement;
+        selectedState.setName(labelBox.value);
+    }
+    if (lastSelectedElement.getType() == "UnionComposite") {
+        let lastSelectedUnion = lastSelectedElement;
+        let stateFrom = lastSelectedUnion.getStateFrom();
+        if (stateFrom == undefined) {
+            console.log("stateFrom of the union composite is undefined");
+            labelBox.style.display = 'none';
+            labelBox.style.width = '1px';
+            labelBox.value = '';
+            return;
+        }
+        // This is how the next section works:
+        // 1. Get all unions related to the union composite
+        // 2. Disjoin them (exactly the same as deleting them)
+        // 3. Add new unions based on the input box value
+        for (let union of lastSelectedUnion.getUnions()) {
+            automata.disjoin(stateFrom, lastSelectedUnion.getStateTo(), union.getSymbol());
+        }
+        for (let symbol of labelBox.value.split(',')) {
+            automata.join(stateFrom, lastSelectedUnion.getStateTo(), symbol);
+        }
+    }
+    labelBox.value = '';
+    labelBox.style.width = '1px';
+    labelBox.style.display = 'none';
+    reloadCanvas();
+});
+labelBox.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter')
+        labelBox.blur();
 });
